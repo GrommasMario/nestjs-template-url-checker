@@ -1,0 +1,132 @@
+version: '3.4'
+x-common-variables: &pg-variables
+  LOG_LEVEL: all
+  HOST: 0.0.0.0
+  PORT: 8080
+  WORKERS_HOST: workers
+  WORKERS_PORT: 7001
+  PG_PORT: 5432
+  PG_HOST: postgres
+  PG_DB: postgres
+  PG_USERNAME: local
+  PG_PASSWORD: local
+  PG_LOGGING: 1
+  YARN_CACHE_FOLDER: /yarn-cache
+
+services:
+  postgres:
+    hostname: postgres
+    container_name: postgres
+    image: postgres:14-alpine
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    volumes:
+      - ./.temp/postgres:/var/lib/posgresql
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: local
+      POSTGRES_PASSWORD: local
+      POSTGRES_DB: postgres
+    healthcheck:
+      test: [ "CMD-SHELL", "sh -c 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}'" ]
+      interval: 10s
+      timeout: 3s
+
+  migrations:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: server
+    user: node
+    command: [ 'yarn', 'run', 'migrate-all' ]
+    environment:
+      <<: *pg-variables
+      NODE_ENV: master
+      YARN_CACHE_FOLDER:
+  http-api:
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: server
+    volumes:
+      - /var/docker/yarn-cache:/yarn-cache
+    user: node
+    ports:
+      - "8080:8080"
+    command: ['node', 'dist/bootstraps/client-api/main.js']
+    environment:
+      <<: *pg-variables
+    healthcheck:
+      test: [ "CMD-SHELL", "sh -c 'curl ${HOST}:${PORT}/health'" ]
+
+  coordinator:
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: server
+    volumes:
+      - /var/docker/yarn-cache:/yarn-cache
+    user: node
+    command: ['node', 'dist/bootstraps/coordinator/main.js']
+    environment:
+      <<: *pg-variables
+      WORKERS_HOST: workers
+      COORDINATOR_TASKS_CEU_ENABLED: 1
+      COORDINATOR_TASKS_CEU_INTERVAL: 5
+    healthcheck:
+      test: [ "CMD-SHELL", "sh -c 'curl ${HOST}:${PORT}/health'" ]
+
+  workers:
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: server
+    volumes:
+      - /var/docker/yarn-cache:/yarn-cache
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: any
+    user: node
+    command: [ 'node', 'dist/bootstraps/workers/main.js' ]
+    environment:
+      <<: *pg-variables
+      WORKERS_HOST: 0.0.0.0
+      ENABLED_WORKER_MODULES: UrlCheckerWorkerModule
+    healthcheck:
+      test: [ "CMD-SHELL", "sh -c 'wget --no-verbose --tries=1 --spider http://${WORKERS_HOST}:${WORKERS_PORT}/health'" ]
+    restart: 'always'
+
+networks:
+  default:
+    driver: bridge

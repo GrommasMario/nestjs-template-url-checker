@@ -1,0 +1,7 @@
+const path = require('path');
+
+module.exports = {
+  config: path.resolve('dist', 'shared', 'database', 'manipulate', 'sequelize.config.js'),
+  'seeders-path': path.resolve('dist', 'shared', 'database', 'manipulate', 'seeds'),
+  'migrations-path': path.resolve('dist', 'shared', 'database', 'manipulate', 'migrations'),
+};
